@@ -8,6 +8,8 @@
     // See also https://aka.ms/tsconfig/module
     "module": "esnext",
     "target": "es2020",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "types": [],
     "lib": ["dom", "es2020"],
     // For nodejs:
