@@ -1,79 +1,51 @@
 import Phaser from 'phaser';
 
 export default class Game extends Phaser.Scene {
-    private player!: Phaser.Physics.Arcade.Sprite;
-    private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-    private wasd!: any;
-    private shiftKey!: Phaser.Input.Keyboard.Key;
-    private walls!: Phaser.Physics.Arcade.StaticGroup;
+    private cube!: Phaser.GameObjects.Rectangle;
+    private moveTarget: Phaser.Math.Vector2 | null = null;
+    private moveSpeed: number = 200;
 
     constructor() {
         super({ key: 'Game' });
     }
 
     preload() {
-        // Create a simple colored rectangle for the player
-        this.load.image('player', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
-        
-        // Create a simple colored rectangle for walls
-        this.load.image('wall', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
+        // blank slate; no assets needed
     }
 
     create() {
-        // Create walls group
-        this.walls = this.physics.add.staticGroup();
+        // create a simple cube (rectangle)
+        this.cube = this.add.rectangle(100, 100, 32, 32, 0x00ff00);
 
-        // Create walls around the edges
-        this.walls.create(400, 0, 'wall').setScale(800, 20).refreshBody();
-        this.walls.create(400, 600, 'wall').setScale(800, 20).refreshBody();
-        this.walls.create(0, 300, 'wall').setScale(20, 600).refreshBody();
-        this.walls.create(800, 300, 'wall').setScale(20, 600).refreshBody();
-
-        // Create some interior walls
-        this.walls.create(200, 200, 'wall').setScale(100, 20).refreshBody();
-        this.walls.create(600, 400, 'wall').setScale(100, 20).refreshBody();
-        this.walls.create(400, 300, 'wall').setScale(20, 100).refreshBody();
-
-        // Create player
-        this.player = this.physics.add.sprite(100, 100, 'player');
-        this.player.setDisplaySize(32, 32);
-        this.player.setTint(0x00ff00); // Green color
-        this.player.setCollideWorldBounds(true);
-
-        // Set up physics
-        this.physics.add.collider(this.player, this.walls);
-
-        // Set up input
-        this.cursors = this.input.keyboard!.createCursorKeys();
-        this.wasd = this.input.keyboard!.addKeys('W,S,A,D');
-        this.shiftKey = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
-
-        // Add some visual feedback
-        this.add.text(16, 16, 'WASD to move, Shift to sprint', {
-            fontSize: '16px',
-            color: '#000000',
-            backgroundColor: '#ffffff',
-            padding: { x: 8, y: 4 }
+        // on pointer down, set target to pointer world position
+        this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            this.moveTarget = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
         });
     }
 
-    update() {
-        const speed = this.shiftKey.isDown ? 200 : 100;
-        
-        // Reset velocity
-        this.player.setVelocity(0);
+    update(time: number, delta: number) {
+        if (!this.moveTarget) return;
 
-        // Handle movement
-        if (this.cursors.left.isDown || this.wasd.A.isDown) {
-            this.player.setVelocityX(-speed);
-        } else if (this.cursors.right.isDown || this.wasd.D.isDown) {
-            this.player.setVelocityX(speed);
+        const current = new Phaser.Math.Vector2(this.cube.x, this.cube.y);
+        const toTarget = this.moveTarget.clone().subtract(current);
+        const distance = toTarget.length();
+
+        if (distance < 2) {
+            // close enough; stop
+            this.moveTarget = null;
+            return;
         }
 
-        if (this.cursors.up.isDown || this.wasd.W.isDown) {
-            this.player.setVelocityY(-speed);
-        } else if (this.cursors.down.isDown || this.wasd.S.isDown) {
-            this.player.setVelocityY(speed);
+        const direction = toTarget.normalize();
+        const step = (this.moveSpeed * delta) / 1000;
+        const nextPos = current.add(direction.scale(step));
+
+        // clamp overshoot
+        if (nextPos.distance(this.moveTarget) > distance) {
+            this.cube.setPosition(this.moveTarget.x, this.moveTarget.y);
+            this.moveTarget = null;
+        } else {
+            this.cube.setPosition(nextPos.x, nextPos.y);
         }
     }
 }

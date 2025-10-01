@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import Game from './scenes/Game';
+import Game from '@/scenes/Game';
 
 const config: Phaser.Types.Core.GameConfig = {
     type: Phaser.AUTO,
@@ -11,7 +11,7 @@ const config: Phaser.Types.Core.GameConfig = {
         default: 'arcade',
         arcade: {
             gravity: { x: 0, y: 0 },
-            debug: false
+            debug: Boolean(import.meta.env.VITE_DEBUG)
         }
     },
     scene: [Game]
