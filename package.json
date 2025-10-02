@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "lil-gui": "^0.20.0",
     "phaser": "^3.70.0"
   },
   "devDependencies": {
