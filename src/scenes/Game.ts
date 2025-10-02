@@ -63,6 +63,7 @@ export default class Game extends Phaser.Scene {
     private bullets: Phaser.GameObjects.Arc[] = []; // All bullets currently flying
     private bulletVelocities: Phaser.Math.Vector2[] = []; // How fast each bullet is moving
     private bulletTimers: number[] = []; // How long each bullet has left to live
+    private bulletShooters: Ship[] = []; // Which ship shot each bullet
 
     // ============================================
     // VISUAL EFFECTS
@@ -110,6 +111,16 @@ export default class Game extends Phaser.Scene {
     private boxEndX: number = 0; // Where the selection box ends (X coordinate)
     private boxEndY: number = 0; // Where the selection box ends (Y coordinate)
 
+    // ============================================
+    // CAMERA CONTROLS
+    // ============================================
+    private cursors?: Phaser.Types.Input.Keyboard.CursorKeys; // Arrow key controls
+    private cameraSpeed: number = 200; // Camera movement speed (pixels per second)
+    private edgeScrollZone: number = 50; // Distance from edge to start scrolling (pixels)
+    private minZoom: number = 0.5; // Minimum zoom level
+    private maxZoom: number = 2.0; // Maximum zoom level
+    private zoomSpeed: number = 0.1; // How fast to zoom in/out
+
     /**
      * CONSTRUCTOR
      * ===========
@@ -148,14 +159,21 @@ export default class Game extends Phaser.Scene {
      */
     create() {
         // ============================================
+        // CREATE SPACE BACKGROUND
+        // ============================================
+        this.createSpaceBackground();
+
+        // ============================================
         // CREATE PLAYER SHIPS
         // ============================================
 
-        // Create 3 Corvettes (fast, light ships)
+        // Create 3 Corvettes (fast, light ships) - positioned near the center of the world
+        const worldCenterX = this.scale.width * 1.5;
+        const worldCenterY = this.scale.height * 1.5;
         const corvettePositions = [
-            { x: 100, y: 150 }, // Left side of screen
-            { x: 150, y: 200 }, // Middle-left
-            { x: 200, y: 100 }, // Upper-middle
+            { x: worldCenterX - 80, y: worldCenterY - 60 }, // Left of center
+            { x: worldCenterX - 40, y: worldCenterY + 40 }, // Below-left of center
+            { x: worldCenterX + 40, y: worldCenterY - 40 }, // Above-right of center
         ];
 
         corvettePositions.forEach((pos, index) => {
@@ -163,30 +181,72 @@ export default class Game extends Phaser.Scene {
             this.ships.push(corvette); // Add to our list of all ships
         });
 
-        // Create 1 Cruiser (slow, heavy ship)
-        const cruiser = this.createShip('cruiser', 250, 150);
+        // Create 1 Cruiser (slow, heavy ship) - positioned near the center of the world
+        const cruiser = this.createShip('cruiser', worldCenterX + 60, worldCenterY + 60);
         this.ships.push(cruiser);
+
+        // ============================================
+        // CREATE HOME ICON
+        // ============================================
+
+        // Create a home icon in the center of the world
+        const homeIcon = this.add.polygon(
+            worldCenterX,
+            worldCenterY,
+            [0, -15, -10, 5, -5, 5, -5, 15, 5, 15, 5, 5, 10, 5],
+            0xffffff,
+            0.8
+        );
+        homeIcon.setStrokeStyle(2, 0x000000, 1);
+        homeIcon.setDepth(500);
 
         // ============================================
         // CREATE ENEMY SHIPS
         // ============================================
 
-        // Create enemy ship in the middle of the screen
-        const enemy = this.createShip('enemy', this.scale.width / 2, this.scale.height / 2);
+        // Create enemy ship towards the edge of the world
+        const enemy = this.createShip('enemy', worldCenterX + 200, worldCenterY + 200);
         this.enemyShips.push(enemy); // Add to enemy list for AI
         this.ships.push(enemy); // Also add to general ships list
 
-        // Create 3 additional enemies to the right of the current enemy
+        // Create 3 additional enemies towards the edges
         const additionalEnemyPositions = [
-            { x: this.scale.width / 2 + 100, y: this.scale.height / 2 - 50 }, // Above
-            { x: this.scale.width / 2 + 100, y: this.scale.height / 2 }, // Same level
-            { x: this.scale.width / 2 + 100, y: this.scale.height / 2 + 50 }, // Below
+            { x: worldCenterX + 300, y: worldCenterY + 300 }, // Top-right corner area
+            { x: worldCenterX + 400, y: worldCenterY + 200 }, // Further right, higher
+            { x: worldCenterX + 200, y: worldCenterY + 400 }, // Further up, more left
         ];
 
         additionalEnemyPositions.forEach((pos, index) => {
             const additionalEnemy = this.createShip('enemy', pos.x, pos.y);
             this.enemyShips.push(additionalEnemy);
             this.ships.push(additionalEnemy);
+        });
+
+        // Create 10 additional enemies around the corners general area
+        const cornerEnemyPositions = [
+            // Top-left corner area
+            { x: worldCenterX - 400, y: worldCenterY - 400 },
+            { x: worldCenterX - 350, y: worldCenterY - 370 },
+            { x: worldCenterX - 370, y: worldCenterY - 330 },
+
+            // Top-right corner area
+            { x: worldCenterX + 400, y: worldCenterY - 400 },
+            { x: worldCenterX + 350, y: worldCenterY - 370 },
+            { x: worldCenterX + 370, y: worldCenterY - 330 },
+
+            // Bottom-left corner area
+            { x: worldCenterX - 400, y: worldCenterY + 400 },
+            { x: worldCenterX - 350, y: worldCenterY + 370 },
+            { x: worldCenterX - 370, y: worldCenterY + 330 },
+
+            // Bottom-right corner area
+            { x: worldCenterX + 400, y: worldCenterY + 400 },
+        ];
+
+        cornerEnemyPositions.forEach((pos, index) => {
+            const cornerEnemy = this.createShip('enemy', pos.x, pos.y);
+            this.enemyShips.push(cornerEnemy);
+            this.ships.push(cornerEnemy);
         });
 
         // ============================================
@@ -330,6 +390,25 @@ export default class Game extends Phaser.Scene {
 
         // Disable the browser's right-click context menu inside the game
         this.input.mouse?.disableContextMenu();
+
+        // ============================================
+        // SETUP CAMERA CONTROLS
+        // ============================================
+
+        // Set up camera with larger world bounds for scrolling
+        this.cameras.main.setBounds(0, 0, this.scale.width * 3, this.scale.height * 3);
+        this.cameras.main.centerOn(this.scale.width * 1.5, this.scale.height * 1.5);
+
+        // Arrow key controls
+        const cursors = this.input.keyboard?.createCursorKeys();
+        if (cursors) {
+            this.cursors = cursors;
+        }
+
+        // Mouse wheel zoom
+        this.input.on('wheel', (pointer: Phaser.Input.Pointer, gameObjects: Phaser.GameObjects.GameObject[], deltaX: number, deltaY: number, deltaZ: number) => {
+            this.handleMouseWheel(deltaY);
+        });
     }
 
     /**
@@ -343,6 +422,11 @@ export default class Game extends Phaser.Scene {
      * @param delta - Time since last frame (milliseconds)
      */
     update(time: number, delta: number) {
+        // ============================================
+        // UPDATE CAMERA CONTROLS
+        // ============================================
+        this.updateCameraControls(delta);
+
         // ============================================
         // UPDATE ALL GAME OBJECTS
         // ============================================
@@ -383,6 +467,11 @@ export default class Game extends Phaser.Scene {
 
         // Move ship toward target
         ship.target = this.moveToward(ship, ship.target, ship.currentSpeed, delta);
+
+        // Apply separation force if ship has reached destination (no waypoints)
+        if (!ship.waypoints.length && ship.target === null) {
+            this.applySeparationForce(ship, delta);
+        }
 
         // Update waypoint tracking
         if (ship.waypoints.length && ship.pathStart === null) {
@@ -428,31 +517,22 @@ export default class Game extends Phaser.Scene {
         const step = (effectiveSpeed * delta) / 1000;
         const nextPos = current.add(direction.scale(step));
 
-        // Check for collisions before moving
-        if (this.checkShipCollisions(ship, nextPos.x, nextPos.y)) {
-            // Stop movement if collision would occur
-            return target;
-        }
+        // Collision detection removed - ships can now overlap
 
         // Clamp overshoot
         if (nextPos.distance(target) > distance) {
-            // Check collision at target position
-            if (!this.checkShipCollisions(ship, target.x, target.y)) {
-                ship.gameObject.setPosition(target.x, target.y);
-                this.updateHealthBar(ship);
-                ship.waypoints.shift();
-                this.updateWaypointDots(ship);
-                const next = ship.waypoints[0] ?? null;
-                if (next) {
-                    ship.pathStart = new Phaser.Math.Vector2(target.x, target.y);
-                } else {
-                    ship.pathStart = null;
-                }
-                return next;
+            // Move to target position (collision detection removed)
+            ship.gameObject.setPosition(target.x, target.y);
+            this.updateHealthBar(ship);
+            ship.waypoints.shift();
+            this.updateWaypointDots(ship);
+            const next = ship.waypoints[0] ?? null;
+            if (next) {
+                ship.pathStart = new Phaser.Math.Vector2(target.x, target.y);
             } else {
-                // Can't reach target due to collision
-                return target;
+                ship.pathStart = null;
             }
+            return next;
         } else {
             ship.gameObject.setPosition(nextPos.x, nextPos.y);
             this.updateHealthBar(ship);
@@ -535,12 +615,14 @@ export default class Game extends Phaser.Scene {
             const bullet = this.bullets[i];
             const velocity = this.bulletVelocities[i];
             const timer = this.bulletTimers[i];
+            const shooter = this.bulletShooters[i];
 
             if (!bullet || !velocity || timer === undefined) {
                 // Clean up invalid entries
                 this.bullets.splice(i, 1);
                 this.bulletVelocities.splice(i, 1);
                 this.bulletTimers.splice(i, 1);
+                this.bulletShooters.splice(i, 1);
                 continue;
             }
 
@@ -551,43 +633,35 @@ export default class Game extends Phaser.Scene {
             // Update timer
             this.bulletTimers[i] = timer - delta;
 
-            // Remove bullet if expired or out of bounds
+            // Remove bullet if expired or out of world bounds
+            const worldWidth = this.scale.width * 3;
+            const worldHeight = this.scale.height * 3;
             if (
                 this.bulletTimers[i]! <= 0 ||
                 bullet.x < 0 ||
-                bullet.x > this.scale.width ||
+                bullet.x > worldWidth ||
                 bullet.y < 0 ||
-                bullet.y > this.scale.height
+                bullet.y > worldHeight
             ) {
                 bullet.destroy();
                 this.bullets.splice(i, 1);
                 this.bulletVelocities.splice(i, 1);
                 this.bulletTimers.splice(i, 1);
+                this.bulletShooters.splice(i, 1);
             } else {
                 // Check for collisions
-                this.checkBulletCollisions(bullet, i);
+                this.checkBulletCollisions(bullet, i, shooter);
             }
         }
     }
 
     // Check bullet collisions
-    private checkBulletCollisions(bullet: Phaser.GameObjects.Arc, bulletIndex: number) {
+    private checkBulletCollisions(bullet: Phaser.GameObjects.Arc, bulletIndex: number, shooter: Ship | undefined) {
         const bulletPos = new Phaser.Math.Vector2(bullet.x, bullet.y);
-
-        // Find which ship shot this bullet (by color)
-        let shooterShip: Ship | null = null;
-        if (bullet.fillColor === VARIABLES.bullet.playerColor) {
-            // Player bullet
-            shooterShip =
-                this.ships.find((ship) => ship.type === 'corvette' || ship.type === 'cruiser') || null;
-        } else if (bullet.fillColor === VARIABLES.bullet.enemyColor) {
-            // Enemy bullet - find the enemy that shot it (this is approximate)
-            shooterShip = this.enemyShips[0] || null;
-        }
 
         this.ships.forEach((ship) => {
             // Don't hit the ship that shot the bullet
-            if (ship === shooterShip) return;
+            if (ship === shooter) return;
 
             const shipPos = new Phaser.Math.Vector2(ship.gameObject.x, ship.gameObject.y);
             const distance = bulletPos.distance(shipPos);
@@ -595,21 +669,22 @@ export default class Game extends Phaser.Scene {
             if (distance < VARIABLES[ship.type].size / 2) {
                 // Hit! Apply damage based on shooter's weapon
                 let damage = 10; // Default damage
-                if (shooterShip) {
-                    damage = VARIABLES[shooterShip.type].weapon.damage;
+                if (shooter) {
+                    damage = VARIABLES[shooter.type].weapon.damage;
                 }
 
                 ship.health -= damage;
                 this.updateHealthBar(ship);
 
                 // Create damage effect
-                this.createDamageEffect(shipPos.x, shipPos.y, shooterShip);
+                this.createDamageEffect(shipPos.x, shipPos.y, shooter || null);
 
                 // Remove bullet
                 bullet.destroy();
                 this.bullets.splice(bulletIndex, 1);
                 this.bulletVelocities.splice(bulletIndex, 1);
                 this.bulletTimers.splice(bulletIndex, 1);
+                this.bulletShooters.splice(bulletIndex, 1);
 
                 // Check if ship is destroyed
                 if (ship.health <= 0) {
@@ -660,6 +735,7 @@ export default class Game extends Phaser.Scene {
         this.bullets.push(bullet);
         this.bulletVelocities.push(velocity);
         this.bulletTimers.push(VARIABLES.bullet.lifetime);
+        this.bulletShooters.push(shooter);
     }
 
     // Create damage effect
@@ -795,11 +871,9 @@ export default class Game extends Phaser.Scene {
                 const newX = center.x + Math.cos(pathData.startAngle) * radius;
                 const newY = center.y + Math.sin(pathData.startAngle) * radius;
 
-                // Check for collisions before moving
-                if (!this.checkShipCollisions(ship, newX, newY)) {
-                    ship.gameObject.setPosition(newX, newY);
-                    this.updateHealthBar(ship);
-                }
+                // Move ship (collision detection removed)
+                ship.gameObject.setPosition(newX, newY);
+                this.updateHealthBar(ship);
             }
         });
     }
@@ -880,6 +954,48 @@ export default class Game extends Phaser.Scene {
         if (current < target) return Math.min(current + maxDelta, target);
         if (current > target) return Math.max(current - maxDelta, target);
         return current;
+    }
+
+    // Apply separation force to prevent ships from overlapping at destination
+    private applySeparationForce(ship: Ship, delta: number) {
+        const shipPos = new Phaser.Math.Vector2(ship.gameObject.x, ship.gameObject.y);
+        const minDistance = VARIABLES.separation.minDistance;
+        const separationForce = VARIABLES.separation.separationForce;
+
+        let separationVector = new Phaser.Math.Vector2(0, 0);
+        let nearbyShipsCount = 0;
+
+        // Check all other ships for proximity
+        for (const otherShip of this.ships) {
+            if (otherShip === ship) continue;
+
+            const otherPos = new Phaser.Math.Vector2(otherShip.gameObject.x, otherShip.gameObject.y);
+            const distance = shipPos.distance(otherPos);
+
+            // If ships are too close, calculate separation force
+            if (distance < minDistance && distance > 0) {
+                const direction = shipPos.clone().subtract(otherPos).normalize();
+                const force = (minDistance - distance) / minDistance; // Stronger force when closer
+                separationVector.add(direction.scale(force));
+                nearbyShipsCount++;
+            }
+        }
+
+        // Apply separation force if there are nearby ships
+        if (nearbyShipsCount > 0) {
+            separationVector.normalize();
+            const moveDistance = separationForce * (delta / 1000); // Scale by delta time
+            const newPos = shipPos.add(separationVector.scale(moveDistance));
+
+            // Keep ships within world bounds
+            const worldWidth = this.scale.width * 3;
+            const worldHeight = this.scale.height * 3;
+            newPos.x = Math.max(0, Math.min(worldWidth, newPos.x));
+            newPos.y = Math.max(0, Math.min(worldHeight, newPos.y));
+
+            ship.gameObject.setPosition(newPos.x, newPos.y);
+            this.updateHealthBar(ship);
+        }
     }
 
     // Box selection helper methods
@@ -1148,5 +1264,171 @@ export default class Game extends Phaser.Scene {
         ship.target = null;
         ship.pathStart = null;
         this.updateWaypointDots(ship);
+    }
+
+    /**
+     * UPDATE CAMERA CONTROLS
+     * ======================
+     *
+     * Handles all camera movement and zoom controls including:
+     * - Arrow key scrolling
+     * - Edge scrolling when mouse is near screen edges
+     * - Mouse wheel zoom
+     */
+    private updateCameraControls(delta: number) {
+        const camera = this.cameras.main;
+        const speed = this.cameraSpeed * (delta / 1000); // Convert to pixels per frame
+
+        // Arrow key controls
+        if (this.cursors) {
+            if (this.cursors.left.isDown) {
+                camera.scrollX -= speed;
+            }
+            if (this.cursors.right.isDown) {
+                camera.scrollX += speed;
+            }
+            if (this.cursors.up.isDown) {
+                camera.scrollY -= speed;
+            }
+            if (this.cursors.down.isDown) {
+                camera.scrollY += speed;
+            }
+        }
+
+        // Edge scrolling - works when mouse is near edges and window is focused
+        if (this.scale.game.canvas === document.activeElement || document.hasFocus()) {
+            const pointer = this.input.activePointer;
+            const screenX = pointer.x; // Screen coordinates, not world coordinates
+            const screenY = pointer.y; // Screen coordinates, not world coordinates
+            const screenWidth = this.scale.width;
+            const screenHeight = this.scale.height;
+
+            // Check if mouse is near edges and scroll accordingly
+            if (screenX < this.edgeScrollZone) {
+                camera.scrollX -= speed * (1 - screenX / this.edgeScrollZone);
+            } else if (screenX > screenWidth - this.edgeScrollZone) {
+                camera.scrollX += speed * ((screenX - (screenWidth - this.edgeScrollZone)) / this.edgeScrollZone);
+            }
+
+            if (screenY < this.edgeScrollZone) {
+                camera.scrollY -= speed * (1 - screenY / this.edgeScrollZone);
+            } else if (screenY > screenHeight - this.edgeScrollZone) {
+                camera.scrollY += speed * ((screenY - (screenHeight - this.edgeScrollZone)) / this.edgeScrollZone);
+            }
+        }
+    }
+
+    /**
+     * HANDLE MOUSE WHEEL ZOOM
+     * =======================
+     *
+     * Handles mouse wheel zoom in/out functionality.
+     * @param deltaY - The wheel delta (positive = zoom out, negative = zoom in)
+     */
+    private handleMouseWheel(deltaY: number) {
+        const camera = this.cameras.main;
+        const currentZoom = camera.zoom;
+
+        // Calculate new zoom level
+        let newZoom = currentZoom;
+        if (deltaY > 0) {
+            // Zoom out
+            newZoom = Math.max(this.minZoom, currentZoom - this.zoomSpeed);
+        } else if (deltaY < 0) {
+            // Zoom in
+            newZoom = Math.min(this.maxZoom, currentZoom + this.zoomSpeed);
+        }
+
+        // Apply zoom if it changed
+        if (newZoom !== currentZoom) {
+            camera.setZoom(newZoom);
+        }
+    }
+
+    /**
+     * CREATE SPACE BACKGROUND
+     * =======================
+     *
+     * Creates a subtle space background with stars and nebula effects.
+     * This runs once when the game starts to set up the visual backdrop.
+     */
+    private createSpaceBackground() {
+        // Create a graphics object for the background
+        const background = this.add.graphics();
+        background.setDepth(-1000); // Place behind everything else
+
+        // Fill the entire world with a very dark space color (3x larger than screen)
+        const worldWidth = this.scale.width * 3;
+        const worldHeight = this.scale.height * 3;
+        background.fillStyle(0x000000, 1); // Pure black
+        background.fillRect(0, 0, worldWidth, worldHeight);
+
+        // Create a subtle nebula effect using gradient circles
+        const nebulaGraphics = this.add.graphics();
+        nebulaGraphics.setDepth(-999);
+
+        // Create several nebula clouds with very dark colors and low opacities
+        const nebulaColors = [
+            { color: 0x050510, alpha: 0.15 }, // Very dark purple
+            { color: 0x080815, alpha: 0.1 }, // Very dark blue
+            { color: 0x0a0a1a, alpha: 0.08 }, // Slightly lighter but still very dark
+        ];
+
+        nebulaColors.forEach((nebula, index) => {
+            nebulaGraphics.fillStyle(nebula.color, nebula.alpha);
+
+            // Create 2-3 nebula clouds per color across the entire world
+            for (let i = 0; i < 2 + Math.floor(Math.random() * 2); i++) {
+                const x = Math.random() * worldWidth;
+                const y = Math.random() * worldHeight;
+                const radius = 80 + Math.random() * 120; // Varying sizes
+
+                nebulaGraphics.fillCircle(x, y, radius);
+            }
+        });
+
+        // Create stars
+        const starGraphics = this.add.graphics();
+        starGraphics.setDepth(-998);
+
+        // Generate random stars across the entire world
+        const numStars = 450 + Math.floor(Math.random() * 300); // 450-750 stars (3x more for larger world)
+
+        for (let i = 0; i < numStars; i++) {
+            const x = Math.random() * worldWidth;
+            const y = Math.random() * worldHeight;
+
+            // Vary star brightness and size (much dimmer)
+            const brightness = 0.1 + Math.random() * 0.3; // 0.1 to 0.4 (much dimmer)
+            const size = Math.random() * 1.5 + 0.3; // 0.3 to 1.8 pixels (smaller)
+
+            // Most stars are very dim white, some are slightly blue or yellow
+            const starColors = [0x404040, 0x303040, 0x404030]; // Much darker colors
+            const color = starColors[Math.floor(Math.random() * starColors.length)] || 0xffffff;
+
+            starGraphics.fillStyle(color, brightness);
+            starGraphics.fillCircle(x, y, size);
+        }
+
+        // Add a few brighter "star clusters" for visual interest
+        const clusterGraphics = this.add.graphics();
+        clusterGraphics.setDepth(-997);
+
+        for (let i = 0; i < 9; i++) { // 9 clusters for the larger world
+            const centerX = Math.random() * worldWidth;
+            const centerY = Math.random() * worldHeight;
+            const clusterSize = 3 + Math.floor(Math.random() * 2); // 3-5 stars per cluster
+
+            for (let j = 0; j < clusterSize; j++) {
+                const offsetX = (Math.random() - 0.5) * 40; // Spread within 40px
+                const offsetY = (Math.random() - 0.5) * 40;
+                const x = centerX + offsetX;
+                const y = centerY + offsetY;
+
+                // Slightly brighter stars in clusters (but still dim)
+                clusterGraphics.fillStyle(0x606060, 0.3 + Math.random() * 0.2);
+                clusterGraphics.fillCircle(x, y, 1 + Math.random() * 0.8);
+            }
+        }
     }
 }

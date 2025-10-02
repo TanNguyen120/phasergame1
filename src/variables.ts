@@ -81,7 +81,7 @@ export const VARIABLES = {
     // BULLET CONFIGURATION
     // ============================================
     bullet: {
-        speed: 400, // How fast bullets travel (pixels per second)
+        speed: 200, // How fast bullets travel (pixels per second)
         size: 3, // Bullet size in pixels (small circles)
         playerColor: 0x39ff14, // Green bullets for player ships
         enemyColor: 0xff0000, // Red bullets for enemy ships
@@ -91,7 +91,15 @@ export const VARIABLES = {
     // ============================================
     // GAME BEHAVIOR SETTINGS
     // ============================================
-    arriveThreshold: 2, // How close a ship needs to be to a waypoint to "arrive" (pixels)
+    arriveThreshold: 3, // How close a ship needs to be to a waypoint to "arrive" (pixels)
+
+    // ============================================
+    // SHIP SEPARATION SETTINGS
+    // ============================================
+    separation: {
+        minDistance: 20, // Minimum distance ships should maintain from each other (pixels)
+        separationForce: 15, // How far ships move away from each other when too close (pixels)
+    },
 };
 
 // This creates a TypeScript type that matches our VARIABLES object
