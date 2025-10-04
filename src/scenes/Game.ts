@@ -83,7 +83,10 @@ export default class Game extends Phaser.Scene {
     // DEBUG CONTROLS
     // ============================================
     private gui!: GUI; // The debug control panel
-    private params = { speed: 200 }; // Parameters that can be changed in debug panel
+    private params = { speed: 200, fps: 0 }; // Parameters that can be changed in debug panel
+    private fpsCounter: number = 0; // Current FPS value
+    private lastFpsUpdate: number = 0; // Last time FPS was calculated
+    private frameCount: number = 0; // Frame counter for FPS calculation
 
     // ============================================
     // USER INTERFACE
@@ -383,6 +386,13 @@ export default class Game extends Phaser.Scene {
                 });
             });
 
+        // Add FPS counter to the debug panel (read-only display)
+        this.gui
+            .add(this.params, 'fps', 0, 120, 1)
+            .name('FPS')
+            .listen() // This makes it update automatically
+            .disable(); // This makes it read-only (display only)
+
         // Clean up the debug panel when the game shuts down
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
             this.gui.destroy();
@@ -422,6 +432,11 @@ export default class Game extends Phaser.Scene {
      * @param delta - Time since last frame (milliseconds)
      */
     update(time: number, delta: number) {
+        // ============================================
+        // UPDATE FPS COUNTER
+        // ============================================
+        this.updateFpsCounter(time);
+
         // ============================================
         // UPDATE CAMERA CONTROLS
         // ============================================
@@ -1315,6 +1330,31 @@ export default class Game extends Phaser.Scene {
             } else if (screenY > screenHeight - this.edgeScrollZone) {
                 camera.scrollY += speed * ((screenY - (screenHeight - this.edgeScrollZone)) / this.edgeScrollZone);
             }
+        }
+    }
+
+    /**
+     * Update FPS counter
+     * ==================
+     * 
+     * Calculates and updates the current FPS value for display in the debug panel.
+     * Updates every second to provide a smooth reading.
+     */
+    private updateFpsCounter(time: number) {
+        this.frameCount++;
+
+        // Initialize on first frame
+        if (this.lastFpsUpdate === 0) {
+            this.lastFpsUpdate = time;
+            return;
+        }
+
+        // Update FPS every second
+        if (time - this.lastFpsUpdate >= 1000) {
+            this.fpsCounter = Math.round((this.frameCount * 1000) / (time - this.lastFpsUpdate));
+            this.params.fps = this.fpsCounter;
+            this.frameCount = 0;
+            this.lastFpsUpdate = time;
         }
     }
 
