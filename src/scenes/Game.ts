@@ -29,17 +29,21 @@ import { VARIABLES } from '@/variables'; // Our game settings
  * "every ship must have these properties"
  */
 interface Ship {
-    gameObject: Phaser.GameObjects.Polygon; // The visual ship on screen
+    gameObject: Phaser.GameObjects.Image; // The visual ship on screen
+    highlightImage: Phaser.GameObjects.Image | null; // Highlight image shown when selected
     type: 'corvette' | 'cruiser' | 'enemy'; // What kind of ship it is
     target: Phaser.Math.Vector2 | null; // Where the ship is trying to go
     pathStart: Phaser.Math.Vector2 | null; // Where the ship started its current path
     waypoints: Phaser.Math.Vector2[]; // List of points the ship will visit
+    waypointDirections: number[]; // Direction the ship should face at each waypoint
     currentSpeed: number; // How fast the ship is moving right now
-    waypointDots: Phaser.GameObjects.Arc[]; // Visual dots showing waypoints
+    waypointDots: Phaser.GameObjects.Container[]; // Visual dots showing waypoints
     lastFireTime: number; // When the ship last shot (for fire rate limiting)
     health: number; // Current health points
     maxHealth: number; // Maximum health points
     healthBar: Phaser.GameObjects.Graphics; // Visual health bar above ship
+    rotation: number; // Current rotation angle in radians
+    targetRotation: number; // Target rotation angle in radians
 }
 
 /**
@@ -83,7 +87,10 @@ export default class Game extends Phaser.Scene {
     // DEBUG CONTROLS
     // ============================================
     private gui!: GUI; // The debug control panel
-    private params = { speed: 200 }; // Parameters that can be changed in debug panel
+    private params = { speed: 200, fps: 0 }; // Parameters that can be changed in debug panel
+    private fpsCounter: number = 0; // Current FPS value
+    private lastFpsUpdate: number = 0; // Last time FPS was calculated
+    private frameCount: number = 0; // Frame counter for FPS calculation
 
     // ============================================
     // USER INTERFACE
@@ -112,14 +119,54 @@ export default class Game extends Phaser.Scene {
     private boxEndY: number = 0; // Where the selection box ends (Y coordinate)
 
     // ============================================
+    // ROTATION INDICATOR SYSTEM
+    // ============================================
+    private rotationIndicator!: Phaser.GameObjects.Graphics; // Graphics for rotation indicator
+    private shipDirectionGraphics!: Phaser.GameObjects.Graphics; // Graphics for ship direction lines
+    private isRotating: boolean = false; // Are we currently setting rotation?
+    private rotationStartPos: Phaser.Math.Vector2 = new Phaser.Math.Vector2(); // Where rotation started
+    private rotationCurrentPos: Phaser.Math.Vector2 = new Phaser.Math.Vector2(); // Current mouse position
+    private rotationShip: Ship | null = null; // Which ship we're rotating
+
+    // ============================================
+    // TARGETING SYSTEM
+    // ============================================
+    private isTargeting: boolean = false; // Are we currently in targeting mode?
+    private targetedEnemy: Ship | null = null; // Which enemy we're targeting
+    private targetingCircle: Phaser.GameObjects.Graphics | null = null; // Red circle around enemy
+    private targetingSnapRange: number = 50; // Distance to snap to enemy (pixels)
+    private targetingReleaseRange: number = 100; // Distance to release from targeting (pixels)
+
+    // ============================================
+    // WAYPOINT LOCKING SYSTEM
+    // ============================================
+    private isWaypointLocked: boolean = false; // Is the waypoint locked to an enemy?
+    private lockedEnemy: Ship | null = null; // Which enemy the waypoint is locked to
+    private lockedDistance: number = 0; // Distance from enemy when locked
+    private lockedWaypointPosition: Phaser.Math.Vector2 = new Phaser.Math.Vector2(); // Current locked waypoint position
+
+    // ============================================
+    // WAYPOINT PATH VISUALIZATION
+    // ============================================
+    private waypointPathGraphics!: Phaser.GameObjects.Graphics; // Graphics for showing waypoint paths
+
+    // ============================================
+    // ENEMY RANDOM MOVEMENT
+    // ============================================
+    private enemyMovementTimers: Map<Ship, number> = new Map(); // Track when each enemy last changed direction
+    private enemyMovementDirections: Map<Ship, Phaser.Math.Vector2> = new Map(); // Current movement direction for each enemy
+
+    // ============================================
     // CAMERA CONTROLS
     // ============================================
     private cursors?: Phaser.Types.Input.Keyboard.CursorKeys; // Arrow key controls
     private cameraSpeed: number = 200; // Camera movement speed (pixels per second)
-    private edgeScrollZone: number = 50; // Distance from edge to start scrolling (pixels)
     private minZoom: number = 0.5; // Minimum zoom level
     private maxZoom: number = 2.0; // Maximum zoom level
     private zoomSpeed: number = 0.1; // How fast to zoom in/out
+    private isDraggingCamera: boolean = false; // Are we currently dragging the camera?
+    private cameraDragStart: Phaser.Math.Vector2 = new Phaser.Math.Vector2(); // Where camera drag started
+    private cameraStartScroll: Phaser.Math.Vector2 = new Phaser.Math.Vector2(); // Camera scroll position when drag started
 
     /**
      * CONSTRUCTOR
@@ -136,13 +183,14 @@ export default class Game extends Phaser.Scene {
      * PRELOAD METHOD
      * ==============
      *
-     * This runs before the game starts. Usually you'd load images,
-     * sounds, and other assets here. But our game uses simple shapes
-     * so we don't need to load anything!
+     * This runs before the game starts. Load images,
+     * sounds, and other assets here.
      */
     preload() {
-        // We don't need to load any images or sounds
-        // because we're using simple geometric shapes
+        // Load ship images
+        this.load.image('player_ship', 'src/assets/ship_player_1.png');
+        this.load.image('player_ship_highlight', 'src/assets/ship_player_1_highlight.png');
+        this.load.image('enemy_ship', 'src/assets/ship_enemy_1.png');
     }
 
     /**
@@ -167,23 +215,18 @@ export default class Game extends Phaser.Scene {
         // CREATE PLAYER SHIPS
         // ============================================
 
-        // Create 3 Corvettes (fast, light ships) - positioned near the center of the world
+        // Create 2 Corvettes (fast, light ships) - positioned near the center of the world
         const worldCenterX = this.scale.width * 1.5;
         const worldCenterY = this.scale.height * 1.5;
         const corvettePositions = [
-            { x: worldCenterX - 80, y: worldCenterY - 60 }, // Left of center
-            { x: worldCenterX - 40, y: worldCenterY + 40 }, // Below-left of center
-            { x: worldCenterX + 40, y: worldCenterY - 40 }, // Above-right of center
+            { x: worldCenterX - 60, y: worldCenterY - 30 }, // Left of center
+            { x: worldCenterX + 40, y: worldCenterY + 30 }, // Right of center
         ];
 
         corvettePositions.forEach((pos, index) => {
             const corvette = this.createShip('corvette', pos.x, pos.y);
             this.ships.push(corvette); // Add to our list of all ships
         });
-
-        // Create 1 Cruiser (slow, heavy ship) - positioned near the center of the world
-        const cruiser = this.createShip('cruiser', worldCenterX + 60, worldCenterY + 60);
-        this.ships.push(cruiser);
 
         // ============================================
         // CREATE HOME ICON
@@ -204,50 +247,13 @@ export default class Game extends Phaser.Scene {
         // CREATE ENEMY SHIPS
         // ============================================
 
-        // Create enemy ship towards the edge of the world
-        const enemy = this.createShip('enemy', worldCenterX + 200, worldCenterY + 200);
+        // Create exactly 1 enemy ship at the bottom of the world
+        const enemy = this.createShip('enemy', worldCenterX, worldCenterY + 300);
         this.enemyShips.push(enemy); // Add to enemy list for AI
         this.ships.push(enemy); // Also add to general ships list
 
-        // Create 3 additional enemies towards the edges
-        const additionalEnemyPositions = [
-            { x: worldCenterX + 300, y: worldCenterY + 300 }, // Top-right corner area
-            { x: worldCenterX + 400, y: worldCenterY + 200 }, // Further right, higher
-            { x: worldCenterX + 200, y: worldCenterY + 400 }, // Further up, more left
-        ];
-
-        additionalEnemyPositions.forEach((pos, index) => {
-            const additionalEnemy = this.createShip('enemy', pos.x, pos.y);
-            this.enemyShips.push(additionalEnemy);
-            this.ships.push(additionalEnemy);
-        });
-
-        // Create 10 additional enemies around the corners general area
-        const cornerEnemyPositions = [
-            // Top-left corner area
-            { x: worldCenterX - 400, y: worldCenterY - 400 },
-            { x: worldCenterX - 350, y: worldCenterY - 370 },
-            { x: worldCenterX - 370, y: worldCenterY - 330 },
-
-            // Top-right corner area
-            { x: worldCenterX + 400, y: worldCenterY - 400 },
-            { x: worldCenterX + 350, y: worldCenterY - 370 },
-            { x: worldCenterX + 370, y: worldCenterY - 330 },
-
-            // Bottom-left corner area
-            { x: worldCenterX - 400, y: worldCenterY + 400 },
-            { x: worldCenterX - 350, y: worldCenterY + 370 },
-            { x: worldCenterX - 370, y: worldCenterY + 330 },
-
-            // Bottom-right corner area
-            { x: worldCenterX + 400, y: worldCenterY + 400 },
-        ];
-
-        cornerEnemyPositions.forEach((pos, index) => {
-            const cornerEnemy = this.createShip('enemy', pos.x, pos.y);
-            this.enemyShips.push(cornerEnemy);
-            this.ships.push(cornerEnemy);
-        });
+        // Initialize enemy random movement
+        this.initializeEnemyMovement(enemy);
 
         // ============================================
         // INITIAL SELECTION
@@ -269,11 +275,20 @@ export default class Game extends Phaser.Scene {
         // Create graphics object for drawing the selection box (when you drag to select multiple ships)
         this.selectionBox = this.add.graphics().setDepth(950);
 
+        // Create graphics object for drawing the rotation indicator
+        this.rotationIndicator = this.add.graphics().setDepth(975);
+
+        // Create graphics object for drawing ship direction lines
+        this.shipDirectionGraphics = this.add.graphics().setDepth(1000);
+
+        // Create graphics object for drawing waypoint paths
+        this.waypointPathGraphics = this.add.graphics().setDepth(850);
+
         // ============================================
         // SETUP USER INPUT HANDLING
         // ============================================
 
-        // Handle mouse clicks for ship selection and movement
+        // Handle mouse clicks for ship selection, movement, and rotation
         this.input.on(
             'pointerdown',
             (pointer: Phaser.Input.Pointer, currentlyOver: Phaser.GameObjects.GameObject[]) => {
@@ -296,32 +311,42 @@ export default class Game extends Phaser.Scene {
                         }
                     }
 
-                    // Normal left click - select ships or start box selection
+                    // Normal left click - select ships or start movement/rotation
                     const clickedShip = this.ships.find(
                         (ship) => ship.gameObject === currentlyOver.find((obj) => obj === ship.gameObject)
                     );
                     if (clickedShip) {
-                        // Clicked on a ship - select only this ship
+                        // Clicked on a ship - select only this ship and start rotation mode
                         this.selectOnlyShip(clickedShip);
+                        this.startRotationOrMovement(pointer);
+                    } else if (this.selectedShips.size > 0) {
+                        // Clicked on empty space with ships selected - start rotation/movement
+                        this.startRotationOrMovement(pointer);
                     } else {
-                        // Clicked on empty space - start box selection (drag to select multiple ships)
+                        // Clicked on empty space with no selection - start box selection
                         this.startBoxSelection(pointer);
                     }
                 } else if (pointer.rightButtonDown()) {
-                    // RIGHT CLICK HANDLING
-                    // Right click - give movement commands to selected ships
-                    this.handleRightClick(pointer);
+                    // RIGHT CLICK - Start camera dragging
+                    this.startCameraDrag(pointer);
                 }
             }
         );
 
-        // Handle mouse movement for box selection and waypoint highlighting
+        // Handle mouse movement for box selection, rotation, camera dragging, and waypoint highlighting
         this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
             if (this.isBoxSelecting) {
                 // Update the selection box as the mouse moves
                 this.boxEndX = pointer.worldX;
                 this.boxEndY = pointer.worldY;
                 this.drawSelectionBox();
+            } else if (this.isRotating && this.rotationShip) {
+                // Update rotation indicator as the mouse moves
+                this.rotationCurrentPos.set(pointer.worldX, pointer.worldY);
+                this.drawRotationIndicator();
+            } else if (this.isDraggingCamera) {
+                // Update camera position as the mouse moves
+                this.updateCameraDrag(pointer);
             }
 
             // Handle waypoint dot highlighting when shift is held
@@ -332,28 +357,41 @@ export default class Game extends Phaser.Scene {
                 // Reset all waypoint dots to normal color
                 this.ships.forEach((ship) => {
                     ship.waypointDots.forEach((dot) => {
-                        dot.setFillStyle(VARIABLES[ship.type].color, 1);
+                        const circle = dot.getAt(0) as Phaser.GameObjects.Arc;
+                        if (circle) {
+                            circle.setFillStyle(VARIABLES[ship.type].color, 1);
+                        }
                     });
                 });
 
                 // Highlight the waypoint dot under the mouse
                 if (hoveredDot) {
-                    hoveredDot.dot.setFillStyle(0xffffff, 1);
+                    const circle = hoveredDot.dot.getAt(0) as Phaser.GameObjects.Arc;
+                    if (circle) {
+                        circle.setFillStyle(0xffffff, 1);
+                    }
                 }
             } else {
                 // Reset all dots to normal color when shift is not held
                 this.ships.forEach((ship) => {
                     ship.waypointDots.forEach((dot) => {
-                        dot.setFillStyle(VARIABLES[ship.type].color, 1);
+                        const circle = dot.getAt(0) as Phaser.GameObjects.Arc;
+                        if (circle) {
+                            circle.setFillStyle(VARIABLES[ship.type].color, 1);
+                        }
                     });
                 });
             }
         });
 
-        // Handle mouse release (finish box selection)
+        // Handle mouse release (finish box selection, rotation, or camera drag)
         this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
             if (this.isBoxSelecting) {
                 this.finishBoxSelection();
+            } else if (this.isRotating && this.rotationShip) {
+                this.finishRotation(pointer);
+            } else if (this.isDraggingCamera) {
+                this.finishCameraDrag();
             }
         });
 
@@ -361,8 +399,7 @@ export default class Game extends Phaser.Scene {
         // CREATE USER INTERFACE
         // ============================================
 
-        // Create selection buttons in the top-left corner (only for player ships, not enemies)
-        this.createSelectionButtons();
+        // Selection buttons removed - using direct ship clicking and box selection only
 
         // ============================================
         // SETUP DEBUG CONTROLS
@@ -382,6 +419,13 @@ export default class Game extends Phaser.Scene {
                     }
                 });
             });
+
+        // Add FPS counter to the debug panel (read-only display)
+        this.gui
+            .add(this.params, 'fps', 0, 120, 1)
+            .name('FPS')
+            .listen() // This makes it update automatically
+            .disable(); // This makes it read-only (display only)
 
         // Clean up the debug panel when the game shuts down
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -423,6 +467,11 @@ export default class Game extends Phaser.Scene {
      */
     update(time: number, delta: number) {
         // ============================================
+        // UPDATE FPS COUNTER
+        // ============================================
+        this.updateFpsCounter(time);
+
+        // ============================================
         // UPDATE CAMERA CONTROLS
         // ============================================
         this.updateCameraControls(delta);
@@ -431,10 +480,17 @@ export default class Game extends Phaser.Scene {
         // UPDATE ALL GAME OBJECTS
         // ============================================
 
+        // Clear graphics at the start of each frame
+        this.shipDirectionGraphics.clear();
+        this.waypointPathGraphics.clear();
+
         // Update all ships (movement, collision detection, etc.)
         this.ships.forEach((ship) => {
             this.updateShip(ship, delta);
         });
+
+        // Draw waypoint paths if shift is held
+        this.drawWaypointPaths();
 
         // Update enemy AI (make enemies hunt and attack player ships)
         this.updateEnemyAI(delta);
@@ -451,8 +507,7 @@ export default class Game extends Phaser.Scene {
         // Handle ships that are moving in circular paths
         this.updateCircularPaths(delta);
 
-        // Draw the path lines showing where ships are going
-        this.drawAllPaths();
+        // Path lines removed - waypoint dots now show direction with arrows
     }
 
     // Update individual ship
@@ -460,12 +515,29 @@ export default class Game extends Phaser.Scene {
         const shipData = VARIABLES[ship.type];
         const dt = delta / 1000;
 
+        // Update rotation smoothly
+        const rotationSpeed = shipData.rotationSpeed; // radians per second
+        const rotationDelta = rotationSpeed * dt;
+        ship.rotation = this.approachRotation(ship.rotation, ship.targetRotation, rotationDelta);
+        ship.gameObject.setRotation(ship.rotation);
+
+        // Update highlight image position and rotation to match the main ship
+        if (ship.highlightImage) {
+            ship.highlightImage.setPosition(ship.gameObject.x, ship.gameObject.y);
+            ship.highlightImage.setRotation(ship.rotation);
+        }
+
+        // DEBUG: Draw a line showing the ship's forward direction
+        if (ship === this.selectedShips.values().next().value) {
+            this.drawShipDirection(ship);
+        }
+
         // Compute current speed with acceleration/deceleration
         const desired = ship.target ? shipData.speed : 0;
         const accel = Math.max(ship.currentSpeed, desired) / (shipData.acceleration / 100);
         ship.currentSpeed = this.approach(ship.currentSpeed, desired, accel * dt);
 
-        // Move ship toward target
+        // Move ship toward target (only the first waypoint)
         ship.target = this.moveToward(ship, ship.target, ship.currentSpeed, delta);
 
         // Apply separation force if ship has reached destination (no waypoints)
@@ -501,8 +573,19 @@ export default class Game extends Phaser.Scene {
 
         if (distance < VARIABLES.arriveThreshold) {
             ship.gameObject.setPosition(target.x, target.y);
-            // Advance to next waypoint
+
+            // Get the direction for the waypoint we just reached BEFORE shifting arrays
+            const currentWaypointDirection = ship.waypointDirections.length > 0 ? ship.waypointDirections[0] : undefined;
+
+            // Set rotation to the direction for the waypoint we just reached
+            if (currentWaypointDirection !== undefined) {
+                ship.targetRotation = currentWaypointDirection;
+            }
+
+            // Advance to next waypoint AFTER getting the direction
             ship.waypoints.shift();
+            ship.waypointDirections.shift();
+
             this.updateWaypointDots(ship);
             const next = ship.waypoints[0] ?? null;
             if (next) {
@@ -524,7 +607,19 @@ export default class Game extends Phaser.Scene {
             // Move to target position (collision detection removed)
             ship.gameObject.setPosition(target.x, target.y);
             this.updateHealthBar(ship);
+
+            // Get the direction for the waypoint we just reached BEFORE shifting arrays
+            const currentWaypointDirection = ship.waypointDirections.length > 0 ? ship.waypointDirections[0] : undefined;
+
+            // Set rotation to the direction for the waypoint we just reached
+            if (currentWaypointDirection !== undefined) {
+                ship.targetRotation = currentWaypointDirection;
+            }
+
+            // Advance to next waypoint AFTER getting the direction
             ship.waypoints.shift();
+            ship.waypointDirections.shift();
+
             this.updateWaypointDots(ship);
             const next = ship.waypoints[0] ?? null;
             if (next) {
@@ -545,6 +640,9 @@ export default class Game extends Phaser.Scene {
         this.enemyShips.forEach((enemyShip) => {
             const enemyData = VARIABLES.enemy;
             const enemyPos = new Phaser.Math.Vector2(enemyShip.gameObject.x, enemyShip.gameObject.y);
+
+            // Update random movement
+            this.updateEnemyRandomMovement(enemyShip, delta);
 
             // Find closest player ship
             let closestShip: Ship | null = null;
@@ -568,6 +666,13 @@ export default class Game extends Phaser.Scene {
                     closestShip.gameObject.x,
                     closestShip.gameObject.y
                 );
+
+                // Keep enemy within world bounds even when chasing
+                const worldWidth = this.scale.width * 3;
+                const worldHeight = this.scale.height * 3;
+                targetPos.x = Math.max(50, Math.min(worldWidth - 50, targetPos.x));
+                targetPos.y = Math.max(50, Math.min(worldHeight - 50, targetPos.y));
+
                 enemyShip.target = targetPos;
 
                 // Try to shoot if in range
@@ -575,9 +680,54 @@ export default class Game extends Phaser.Scene {
                     this.tryShoot(enemyShip, closestShip);
                 }
             } else {
-                enemyShip.target = null;
+                // Use random movement when no player ships in range
+                const randomDirection = this.enemyMovementDirections.get(enemyShip);
+                if (randomDirection) {
+                    const currentPos = new Phaser.Math.Vector2(enemyShip.gameObject.x, enemyShip.gameObject.y);
+                    const targetPos = currentPos.clone().add(randomDirection.scale(100)); // Move 100 pixels in random direction
+
+                    // Keep enemy within world bounds
+                    const worldWidth = this.scale.width * 3;
+                    const worldHeight = this.scale.height * 3;
+                    targetPos.x = Math.max(50, Math.min(worldWidth - 50, targetPos.x));
+                    targetPos.y = Math.max(50, Math.min(worldHeight - 50, targetPos.y));
+
+                    enemyShip.target = targetPos;
+                }
             }
         });
+    }
+
+    // Initialize enemy random movement
+    private initializeEnemyMovement(enemy: Ship) {
+        const currentTime = this.time.now;
+        this.enemyMovementTimers.set(enemy, currentTime);
+
+        // Generate random direction
+        const randomAngle = Math.random() * Math.PI * 2; // Random angle 0 to 2π
+        const randomDirection = new Phaser.Math.Vector2(
+            Math.cos(randomAngle),
+            Math.sin(randomAngle)
+        );
+        this.enemyMovementDirections.set(enemy, randomDirection);
+    }
+
+    // Update enemy random movement
+    private updateEnemyRandomMovement(enemy: Ship, delta: number) {
+        const currentTime = this.time.now;
+        const lastChangeTime = this.enemyMovementTimers.get(enemy) || 0;
+
+        // Change direction every 30 seconds (30000ms)
+        if (currentTime - lastChangeTime >= 30000) {
+            // Generate new random direction
+            const randomAngle = Math.random() * Math.PI * 2; // Random angle 0 to 2π
+            const randomDirection = new Phaser.Math.Vector2(
+                Math.cos(randomAngle),
+                Math.sin(randomAngle)
+            );
+            this.enemyMovementDirections.set(enemy, randomDirection);
+            this.enemyMovementTimers.set(enemy, currentTime);
+        }
     }
 
     // Update player ship AI - make them shoot at enemies
@@ -803,13 +953,22 @@ export default class Game extends Phaser.Scene {
         // Remove from selected ships
         this.selectedShips.delete(ship);
 
-        // Destroy game object, health bar, and waypoint dots
+        // Destroy game object, highlight image, health bar, and waypoint dots
         ship.gameObject.destroy();
+        if (ship.highlightImage) {
+            ship.highlightImage.destroy();
+        }
         ship.healthBar.destroy();
         ship.waypointDots.forEach((dot) => dot.destroy());
 
         // Remove circular path if exists
         this.circularPaths.delete(ship);
+
+        // Clean up enemy movement data if it's an enemy
+        if (ship.type === 'enemy') {
+            this.enemyMovementTimers.delete(ship);
+            this.enemyMovementDirections.delete(ship);
+        }
     }
 
     // Draw all ship paths
@@ -925,28 +1084,10 @@ export default class Game extends Phaser.Scene {
         return Math.hypot(abx, aby) * t;
     }
 
-    // Compute the polygon centroid in world space so lines originate from the triangle's middle
-    private getObjectCenter(obj: Phaser.GameObjects.Polygon): Phaser.Math.Vector2 {
-        // Access polygon points in local space
-        const geom: any = (obj as any).geom;
-        const points: { x: number; y: number }[] = geom && geom.points ? geom.points : [];
-        if (!points.length) {
-            // Fallback to bounds center if points are unavailable
-            const b = obj.getBounds();
-            return new Phaser.Math.Vector2(b.centerX, b.centerY);
-        }
-
-        const mat = obj.getWorldTransformMatrix();
-        const tmp = new Phaser.Math.Vector2();
-        let sumX = 0;
-        let sumY = 0;
-        for (const p of points) {
-            const w = mat.transformPoint(p.x, p.y, tmp);
-            sumX += w.x;
-            sumY += w.y;
-        }
-        const inv = 1 / points.length;
-        return new Phaser.Math.Vector2(sumX * inv, sumY * inv);
+    // Compute the object center in world space so lines originate from the ship's middle
+    private getObjectCenter(obj: Phaser.GameObjects.Image): Phaser.Math.Vector2 {
+        // For images, just use the object's position since they're centered
+        return new Phaser.Math.Vector2(obj.x, obj.y);
     }
 
     // Linear approach helper: move current toward target by maxDelta
@@ -999,26 +1140,6 @@ export default class Game extends Phaser.Scene {
     }
 
     // Box selection helper methods
-
-    private handleRightClick(pointer: Phaser.Input.Pointer) {
-        const clickPos = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
-        const append = (pointer.event as MouseEvent).shiftKey === true;
-
-        // Move all selected ships to the target
-        this.selectedShips.forEach((ship) => {
-            // Clear circular path when giving new movement commands
-            this.circularPaths.delete(ship);
-
-            if (append && ship.waypoints.length > 0) {
-                ship.waypoints.push(clickPos);
-            } else {
-                ship.waypoints = [clickPos];
-                ship.pathStart = this.getObjectCenter(ship.gameObject);
-            }
-            ship.target = ship.waypoints[0] ?? null;
-            this.updateWaypointDots(ship);
-        });
-    }
 
     private selectOnlyShip(ship: Ship) {
         this.selectedShips.clear();
@@ -1076,23 +1197,69 @@ export default class Game extends Phaser.Scene {
     }
 
     private updateShipColors() {
-        // Reset all ships to their default colors
+        // Reset all ships to their default appearance
         this.ships.forEach((ship) => {
-            ship.gameObject.setFillStyle(0x00ff00, 0).setStrokeStyle(2, VARIABLES[ship.type].color, 1);
+            ship.gameObject.setTint(0xffffff); // Reset to normal color
+            // Hide highlight image for all ships
+            if (ship.highlightImage) {
+                ship.highlightImage.setVisible(false);
+            }
         });
 
-        // Change selected ships to white
+        // Show highlight image for selected ships
         this.selectedShips.forEach((ship) => {
-            ship.gameObject.setFillStyle(0xffffff, 0).setStrokeStyle(2, 0xffffff, 1);
+            if (ship.highlightImage) {
+                ship.highlightImage.setVisible(true);
+            }
         });
     }
 
-    // Create a waypoint dot
-    private createWaypointDot(x: number, y: number): Phaser.GameObjects.Arc {
-        const dot = this.add.circle(x, y, 3, VARIABLES.corvette.color, 1);
-        dot.setDepth(850);
+    // Create a waypoint dot with direction arrow
+    private createWaypointDot(x: number, y: number, direction?: number): Phaser.GameObjects.Container {
+        const container = this.add.container(x, y);
+
+        // Create the dot
+        const dot = this.add.circle(0, 0, 3, VARIABLES.corvette.color, 1);
         dot.setInteractive({ useHandCursor: true });
-        return dot;
+
+        container.add(dot);
+
+        // Add direction arrow if direction is provided
+        if (direction !== undefined) {
+            const arrowLength = 30; // Increased from 10 to 30 pixels
+            const arrowEndX = Math.cos(direction) * arrowLength;
+            const arrowEndY = Math.sin(direction) * arrowLength;
+
+            // Create arrow line
+            const arrowLine = this.add.graphics();
+            arrowLine.lineStyle(2, VARIABLES.corvette.color, 1);
+            arrowLine.beginPath();
+            arrowLine.moveTo(0, 0);
+            arrowLine.lineTo(arrowEndX, arrowEndY);
+            arrowLine.strokePath();
+
+            // Create arrowhead - same size as rotation indicator arrow
+            const arrowHeadLength = 15; // Increased from 6 to 15 to match rotation indicator
+            const arrowAngle1 = direction - Math.PI / 6;
+            const arrowAngle2 = direction + Math.PI / 6;
+
+            const headX1 = arrowEndX - Math.cos(arrowAngle1) * arrowHeadLength;
+            const headY1 = arrowEndY - Math.sin(arrowAngle1) * arrowHeadLength;
+            const headX2 = arrowEndX - Math.cos(arrowAngle2) * arrowHeadLength;
+            const headY2 = arrowEndY - Math.sin(arrowAngle2) * arrowHeadLength;
+
+            arrowLine.beginPath();
+            arrowLine.moveTo(arrowEndX, arrowEndY);
+            arrowLine.lineTo(headX1, headY1);
+            arrowLine.moveTo(arrowEndX, arrowEndY);
+            arrowLine.lineTo(headX2, headY2);
+            arrowLine.strokePath();
+
+            container.add(arrowLine);
+        }
+
+        container.setDepth(850);
+        return container;
     }
 
     // Update waypoint dots for a ship
@@ -1102,8 +1269,10 @@ export default class Game extends Phaser.Scene {
         ship.waypointDots.length = 0;
 
         // Create new dots for each waypoint
-        ship.waypoints.forEach((waypoint) => {
-            const dot = this.createWaypointDot(waypoint.x, waypoint.y);
+        ship.waypoints.forEach((waypoint, index) => {
+            // Use the stored direction for this waypoint
+            const direction = ship.waypointDirections[index];
+            const dot = this.createWaypointDot(waypoint.x, waypoint.y, direction);
             ship.waypointDots.push(dot);
         });
     }
@@ -1111,7 +1280,7 @@ export default class Game extends Phaser.Scene {
     // Check if pointer is hovering over a waypoint dot
     private getHoveredDot(
         pointer: Phaser.Input.Pointer
-    ): { dot: Phaser.GameObjects.Arc; ship: Ship; waypointIndex: number } | null {
+    ): { dot: Phaser.GameObjects.Container; ship: Ship; waypointIndex: number } | null {
         for (const ship of this.ships) {
             for (let i = 0; i < ship.waypointDots.length; i++) {
                 const dot = ship.waypointDots[i];
@@ -1126,30 +1295,40 @@ export default class Game extends Phaser.Scene {
     // Create a ship of the specified type
     private createShip(type: 'corvette' | 'cruiser' | 'enemy', x: number, y: number): Ship {
         const shipData = VARIABLES[type];
-        let gameObject: Phaser.GameObjects.Polygon;
+        let gameObject: Phaser.GameObjects.Image;
+        let highlightImage: Phaser.GameObjects.Image | null = null;
 
-        if (type === 'corvette' || type === 'enemy') {
-            // Triangle shape
-            const half = shipData.size / 2;
-            const triPoints = [0, -half, -half, half, half, half];
-            gameObject = this.add
-                .polygon(x, y, triPoints, 0x00ff00, 0)
-                .setStrokeStyle(2, shipData.color, 1)
-                .setOrigin(0.5, 0.5);
+        if (type === 'corvette') {
+            // Use player ship image for corvettes
+            gameObject = this.add.image(x, y, 'player_ship');
+            // Create highlight image for player ships
+            highlightImage = this.add.image(x, y, 'player_ship_highlight');
+        } else if (type === 'enemy') {
+            // Use enemy ship image for enemies
+            gameObject = this.add.image(x, y, 'enemy_ship');
+            // No highlight image for enemy ships
         } else {
-            // Square shape for cruiser
-            const half = shipData.size / 2;
-            const squarePoints = [-half, -half, half, -half, half, half, -half, half];
-            gameObject = this.add
-                .polygon(x, y, squarePoints, 0x00ff00, 0)
-                .setStrokeStyle(2, shipData.color, 1)
-                .setOrigin(0.5, 0.5);
+            // For cruiser (though we removed cruisers, keeping for completeness)
+            gameObject = this.add.image(x, y, 'player_ship');
+            // Create highlight image for player ships
+            highlightImage = this.add.image(x, y, 'player_ship_highlight');
         }
 
-        // Make ship interactive
-        const geom: Phaser.Geom.Polygon = (gameObject as any).geom as Phaser.Geom.Polygon;
-        gameObject.setInteractive(geom, Phaser.Geom.Polygon.Contains);
+        // Set ship size and make it interactive
+        gameObject.setScale(shipData.size / 32); // Assuming original image is 32x32
+        gameObject.setOrigin(0.5, 0.5);
+        gameObject.setRotation(Math.PI / 2); // Flip sprite 90 degrees to fix orientation
+        gameObject.setInteractive();
         if (gameObject.input) gameObject.input.cursor = 'pointer';
+
+        // Set up highlight image if it exists
+        if (highlightImage) {
+            highlightImage.setScale(shipData.size / 32); // Same scale as main ship
+            highlightImage.setOrigin(0.5, 0.5);
+            highlightImage.setRotation(Math.PI / 2); // Same rotation as main ship
+            highlightImage.setDepth(gameObject.depth + 1); // Slightly above the main ship
+            highlightImage.setVisible(false); // Hidden by default
+        }
 
         // Create health bar
         const healthBar = this.add.graphics();
@@ -1157,16 +1336,20 @@ export default class Game extends Phaser.Scene {
 
         const ship = {
             gameObject,
+            highlightImage,
             type,
             target: null,
             pathStart: null,
             waypoints: [],
+            waypointDirections: [],
             currentSpeed: 0,
             waypointDots: [],
             lastFireTime: 0,
             health: shipData.health,
             maxHealth: shipData.health,
             healthBar,
+            rotation: -Math.PI / 2, // Start facing north (up) - adjusted for flipped sprite
+            targetRotation: -Math.PI / 2, // Start facing north (up) - adjusted for flipped sprite
         };
 
         // Update health bar display
@@ -1175,37 +1358,6 @@ export default class Game extends Phaser.Scene {
         return ship;
     }
 
-    // Create selection buttons for player ships
-    private createSelectionButtons() {
-        const margin = 12;
-        const btnWidth = 100;
-        const btnHeight = 30;
-        const playerShips = this.ships.filter((ship) => ship.type !== 'enemy');
-
-        playerShips.forEach((ship, index) => {
-            const btn = this.add
-                .rectangle(margin, margin + index * (btnHeight + 8), btnWidth, btnHeight, 0x000000)
-                .setOrigin(0, 0)
-                .setScrollFactor(0)
-                .setDepth(1000)
-                .setInteractive({ useHandCursor: true });
-            btn.setStrokeStyle(1, 0xffffff, 1);
-
-            const label = this.add
-                .text(
-                    margin + 10,
-                    margin + index * (btnHeight + 8) + 7,
-                    `${VARIABLES[ship.type].name} ${index + 1}`,
-                    { color: '#ffffff' }
-                )
-                .setScrollFactor(0)
-                .setDepth(1001);
-
-            btn.on('pointerdown', () => {
-                this.selectOnlyShip(ship);
-            });
-        });
-    }
 
     // Update health bar display
     private updateHealthBar(ship: Ship) {
@@ -1272,7 +1424,6 @@ export default class Game extends Phaser.Scene {
      *
      * Handles all camera movement and zoom controls including:
      * - Arrow key scrolling
-     * - Edge scrolling when mouse is near screen edges
      * - Mouse wheel zoom
      */
     private updateCameraControls(delta: number) {
@@ -1294,27 +1445,30 @@ export default class Game extends Phaser.Scene {
                 camera.scrollY += speed;
             }
         }
+    }
 
-        // Edge scrolling - works when mouse is near edges and window is focused
-        if (this.scale.game.canvas === document.activeElement || document.hasFocus()) {
-            const pointer = this.input.activePointer;
-            const screenX = pointer.x; // Screen coordinates, not world coordinates
-            const screenY = pointer.y; // Screen coordinates, not world coordinates
-            const screenWidth = this.scale.width;
-            const screenHeight = this.scale.height;
+    /**
+     * Update FPS counter
+     * ==================
+     * 
+     * Calculates and updates the current FPS value for display in the debug panel.
+     * Updates every second to provide a smooth reading.
+     */
+    private updateFpsCounter(time: number) {
+        this.frameCount++;
 
-            // Check if mouse is near edges and scroll accordingly
-            if (screenX < this.edgeScrollZone) {
-                camera.scrollX -= speed * (1 - screenX / this.edgeScrollZone);
-            } else if (screenX > screenWidth - this.edgeScrollZone) {
-                camera.scrollX += speed * ((screenX - (screenWidth - this.edgeScrollZone)) / this.edgeScrollZone);
-            }
+        // Initialize on first frame
+        if (this.lastFpsUpdate === 0) {
+            this.lastFpsUpdate = time;
+            return;
+        }
 
-            if (screenY < this.edgeScrollZone) {
-                camera.scrollY -= speed * (1 - screenY / this.edgeScrollZone);
-            } else if (screenY > screenHeight - this.edgeScrollZone) {
-                camera.scrollY += speed * ((screenY - (screenHeight - this.edgeScrollZone)) / this.edgeScrollZone);
-            }
+        // Update FPS every second
+        if (time - this.lastFpsUpdate >= 1000) {
+            this.fpsCounter = Math.round((this.frameCount * 1000) / (time - this.lastFpsUpdate));
+            this.params.fps = this.fpsCounter;
+            this.frameCount = 0;
+            this.lastFpsUpdate = time;
         }
     }
 
@@ -1343,6 +1497,555 @@ export default class Game extends Phaser.Scene {
         if (newZoom !== currentZoom) {
             camera.setZoom(newZoom);
         }
+    }
+
+    /**
+     * ROTATION HANDLING METHODS
+     * =========================
+     *
+     * Methods for handling ship rotation with visual indicators.
+     */
+
+    // Start rotation or movement when clicking on empty space with ships selected
+    private startRotationOrMovement(pointer: Phaser.Input.Pointer) {
+        // Get the first selected ship for rotation reference
+        const firstSelectedShip = Array.from(this.selectedShips)[0];
+        if (!firstSelectedShip) return;
+
+        // Start rotation mode
+        this.isRotating = true;
+        this.rotationShip = firstSelectedShip;
+        this.rotationStartPos.set(pointer.worldX, pointer.worldY);
+        this.rotationCurrentPos.set(pointer.worldX, pointer.worldY);
+
+        // Draw initial rotation indicator
+        this.drawRotationIndicator();
+    }
+
+    // Draw the rotation indicator (green dot + rotating arrow) or targeting mode
+    private drawRotationIndicator() {
+        if (!this.rotationShip) return;
+
+        this.rotationIndicator.clear();
+
+        // Check if we're near an enemy and should enter targeting mode or lock waypoint
+        const nearestEnemy = this.findNearestEnemy(this.rotationCurrentPos);
+
+        if (nearestEnemy) {
+            const distanceToEnemy = this.rotationCurrentPos.distance(
+                new Phaser.Math.Vector2(nearestEnemy.gameObject.x, nearestEnemy.gameObject.y)
+            );
+
+            if (distanceToEnemy <= this.targetingSnapRange) {
+                // Check if we're dragging a waypoint (not just rotating)
+                const isDraggingWaypoint = this.rotationStartPos.distance(this.rotationCurrentPos) > 10;
+
+                if (isDraggingWaypoint && !this.isWaypointLocked) {
+                    // Lock the waypoint to this enemy
+                    this.lockWaypointToEnemy(nearestEnemy);
+                } else if (!isDraggingWaypoint && !this.isTargeting) {
+                    // Enter normal targeting mode
+                    this.enterTargetingMode(nearestEnemy);
+                }
+            }
+        }
+
+        // Update locked waypoint position if we have one
+        if (this.isWaypointLocked && this.lockedEnemy) {
+            this.updateLockedWaypointPosition();
+        }
+
+        if (this.isTargeting && this.targetedEnemy) {
+            // We're in targeting mode - show targeting circle/arrow
+            this.updateTargetingMode();
+        } else if (this.isWaypointLocked && this.lockedEnemy) {
+            // We have a locked waypoint - show targeting from locked position
+            this.updateLockedWaypointTargeting();
+        } else {
+            // Normal rotation mode - draw green dot and arrow
+            this.drawNormalRotationIndicator();
+        }
+    }
+
+    // Draw normal rotation indicator (green dot + arrow)
+    private drawNormalRotationIndicator() {
+        // Draw green dot at start position
+        this.rotationIndicator.fillStyle(0x00ff00, 1);
+        this.rotationIndicator.fillCircle(this.rotationStartPos.x, this.rotationStartPos.y, 4);
+
+        // Calculate angle from start to current position
+        const deltaX = this.rotationCurrentPos.x - this.rotationStartPos.x;
+        const deltaY = this.rotationCurrentPos.y - this.rotationStartPos.y;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+        if (distance > 10) { // Only draw arrow if mouse moved far enough
+            const angle = Math.atan2(deltaY, deltaX);
+
+            // Draw arrow line
+            this.rotationIndicator.lineStyle(2, 0x00ff00, 1);
+            this.rotationIndicator.beginPath();
+            this.rotationIndicator.moveTo(this.rotationStartPos.x, this.rotationStartPos.y);
+            this.rotationIndicator.lineTo(this.rotationCurrentPos.x, this.rotationCurrentPos.y);
+            this.rotationIndicator.strokePath();
+
+            // Draw arrowhead
+            const arrowLength = 15;
+            const arrowAngle1 = angle - Math.PI / 6;
+            const arrowAngle2 = angle + Math.PI / 6;
+
+            const arrowX1 = this.rotationCurrentPos.x - Math.cos(arrowAngle1) * arrowLength;
+            const arrowY1 = this.rotationCurrentPos.y - Math.sin(arrowAngle1) * arrowLength;
+            const arrowX2 = this.rotationCurrentPos.x - Math.cos(arrowAngle2) * arrowLength;
+            const arrowY2 = this.rotationCurrentPos.y - Math.sin(arrowAngle2) * arrowLength;
+
+            this.rotationIndicator.beginPath();
+            this.rotationIndicator.moveTo(this.rotationCurrentPos.x, this.rotationCurrentPos.y);
+            this.rotationIndicator.lineTo(arrowX1, arrowY1);
+            this.rotationIndicator.moveTo(this.rotationCurrentPos.x, this.rotationCurrentPos.y);
+            this.rotationIndicator.lineTo(arrowX2, arrowY2);
+            this.rotationIndicator.strokePath();
+        }
+    }
+
+    // Find the nearest enemy to a given position
+    private findNearestEnemy(position: Phaser.Math.Vector2): Ship | null {
+        let nearestEnemy: Ship | null = null;
+        let nearestDistance = Infinity;
+
+        for (const enemy of this.enemyShips) {
+            const distance = position.distance(
+                new Phaser.Math.Vector2(enemy.gameObject.x, enemy.gameObject.y)
+            );
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestEnemy = enemy;
+            }
+        }
+
+        return nearestEnemy;
+    }
+
+    // Enter targeting mode
+    private enterTargetingMode(enemy: Ship) {
+        this.isTargeting = true;
+        this.targetedEnemy = enemy;
+
+        // Create red circle around enemy
+        this.targetingCircle = this.add.graphics();
+        this.targetingCircle.setDepth(1000); // Above everything else
+    }
+
+    // Update targeting mode
+    private updateTargetingMode() {
+        if (!this.targetedEnemy || !this.targetingCircle) return;
+
+        // Check if we should exit targeting mode
+        const distanceToEnemy = this.rotationCurrentPos.distance(
+            new Phaser.Math.Vector2(this.targetedEnemy.gameObject.x, this.targetedEnemy.gameObject.y)
+        );
+
+        if (distanceToEnemy > this.targetingReleaseRange) {
+            // Exit targeting mode
+            this.exitTargetingMode();
+            return;
+        }
+
+        // Clear previous drawing
+        this.targetingCircle.clear();
+
+        const enemyPos = new Phaser.Math.Vector2(this.targetedEnemy.gameObject.x, this.targetedEnemy.gameObject.y);
+
+        // Draw red circle around enemy
+        this.targetingCircle.lineStyle(3, 0xff0000, 1); // Red color, 3px thick
+        this.targetingCircle.strokeCircle(enemyPos.x, enemyPos.y, 40); // 40px radius circle
+
+        // Calculate the angle from enemy to cursor
+        const angleToCursor = Math.atan2(
+            this.rotationCurrentPos.y - enemyPos.y,
+            this.rotationCurrentPos.x - enemyPos.x
+        );
+
+        // Draw red arrow from enemy center pointing toward cursor
+        const arrowLength = 50;
+        const arrowEndX = enemyPos.x + Math.cos(angleToCursor) * arrowLength;
+        const arrowEndY = enemyPos.y + Math.sin(angleToCursor) * arrowLength;
+
+        // Draw arrow line
+        this.targetingCircle.lineStyle(3, 0xff0000, 1); // Red color, 3px thick
+        this.targetingCircle.beginPath();
+        this.targetingCircle.moveTo(enemyPos.x, enemyPos.y);
+        this.targetingCircle.lineTo(arrowEndX, arrowEndY);
+        this.targetingCircle.strokePath();
+
+        // Draw arrowhead
+        const arrowHeadLength = 15;
+        const arrowAngle1 = angleToCursor - Math.PI / 6;
+        const arrowAngle2 = angleToCursor + Math.PI / 6;
+
+        const headX1 = arrowEndX - Math.cos(arrowAngle1) * arrowHeadLength;
+        const headY1 = arrowEndY - Math.sin(arrowAngle1) * arrowHeadLength;
+        const headX2 = arrowEndX - Math.cos(arrowAngle2) * arrowHeadLength;
+        const headY2 = arrowEndY - Math.sin(arrowAngle2) * arrowHeadLength;
+
+        this.targetingCircle.beginPath();
+        this.targetingCircle.moveTo(arrowEndX, arrowEndY);
+        this.targetingCircle.lineTo(headX1, headY1);
+        this.targetingCircle.moveTo(arrowEndX, arrowEndY);
+        this.targetingCircle.lineTo(headX2, headY2);
+        this.targetingCircle.strokePath();
+    }
+
+    // Exit targeting mode
+    private exitTargetingMode() {
+        this.isTargeting = false;
+        this.targetedEnemy = null;
+
+        if (this.targetingCircle) {
+            this.targetingCircle.destroy();
+            this.targetingCircle = null;
+        }
+    }
+
+    // Lock waypoint to an enemy
+    private lockWaypointToEnemy(enemy: Ship) {
+        this.isWaypointLocked = true;
+        this.lockedEnemy = enemy;
+
+        // Calculate the distance from enemy to current waypoint position
+        const enemyPos = new Phaser.Math.Vector2(enemy.gameObject.x, enemy.gameObject.y);
+        this.lockedDistance = this.rotationCurrentPos.distance(enemyPos);
+
+        // Set initial locked waypoint position
+        this.lockedWaypointPosition.copy(this.rotationCurrentPos);
+
+        // Create targeting circle for locked waypoint
+        this.targetingCircle = this.add.graphics();
+        this.targetingCircle.setDepth(1000); // Above everything else
+    }
+
+    // Update locked waypoint position to follow enemy movement
+    private updateLockedWaypointPosition() {
+        if (!this.lockedEnemy) return;
+
+        const enemyPos = new Phaser.Math.Vector2(this.lockedEnemy.gameObject.x, this.lockedEnemy.gameObject.y);
+
+        // Calculate direction from enemy to current mouse position
+        const direction = new Phaser.Math.Vector2(this.rotationCurrentPos.x - enemyPos.x, this.rotationCurrentPos.y - enemyPos.y);
+        direction.normalize();
+
+        // Set locked waypoint position at the locked distance from enemy
+        this.lockedWaypointPosition.set(
+            enemyPos.x + direction.x * this.lockedDistance,
+            enemyPos.y + direction.y * this.lockedDistance
+        );
+    }
+
+    // Update targeting display for locked waypoint
+    private updateLockedWaypointTargeting() {
+        if (!this.lockedEnemy || !this.targetingCircle) return;
+
+        // Check if we should unlock the waypoint
+        const distanceToEnemy = this.rotationCurrentPos.distance(
+            new Phaser.Math.Vector2(this.lockedEnemy.gameObject.x, this.lockedEnemy.gameObject.y)
+        );
+
+        if (distanceToEnemy > this.targetingReleaseRange) {
+            // Unlock the waypoint
+            this.unlockWaypoint();
+            return;
+        }
+
+        // Clear previous drawing
+        this.targetingCircle.clear();
+
+        // Draw red circle around enemy
+        this.targetingCircle.lineStyle(3, 0xff0000, 1); // Red color, 3px thick
+        this.targetingCircle.strokeCircle(this.lockedEnemy.gameObject.x, this.lockedEnemy.gameObject.y, 30);
+
+        // Draw red arrow from locked waypoint position toward mouse cursor
+        const waypointPos = this.lockedWaypointPosition;
+        const mousePos = this.rotationCurrentPos;
+
+        // Calculate angle from waypoint to mouse
+        const angleToMouse = Math.atan2(mousePos.y - waypointPos.y, mousePos.x - waypointPos.x);
+
+        // Draw arrow from waypoint to mouse
+        const arrowLength = 20;
+        const arrowEndX = waypointPos.x + Math.cos(angleToMouse) * arrowLength;
+        const arrowEndY = waypointPos.y + Math.sin(angleToMouse) * arrowLength;
+
+        this.targetingCircle.lineStyle(3, 0xff0000, 1);
+        this.targetingCircle.beginPath();
+        this.targetingCircle.moveTo(waypointPos.x, waypointPos.y);
+        this.targetingCircle.lineTo(arrowEndX, arrowEndY);
+        this.targetingCircle.strokePath();
+
+        // Draw arrow head
+        const headLength = 8;
+        const headAngle = Math.PI / 6; // 30 degrees
+        const headX1 = arrowEndX - Math.cos(angleToMouse - headAngle) * headLength;
+        const headY1 = arrowEndY - Math.sin(angleToMouse - headAngle) * headLength;
+        const headX2 = arrowEndX - Math.cos(angleToMouse + headAngle) * headLength;
+        const headY2 = arrowEndY - Math.sin(angleToMouse + headAngle) * headLength;
+
+        this.targetingCircle.beginPath();
+        this.targetingCircle.moveTo(arrowEndX, arrowEndY);
+        this.targetingCircle.lineTo(headX1, headY1);
+        this.targetingCircle.moveTo(arrowEndX, arrowEndY);
+        this.targetingCircle.lineTo(headX2, headY2);
+        this.targetingCircle.strokePath();
+    }
+
+    // Unlock waypoint from enemy
+    private unlockWaypoint() {
+        this.isWaypointLocked = false;
+        this.lockedEnemy = null;
+        this.lockedDistance = 0;
+
+        if (this.targetingCircle) {
+            this.targetingCircle.destroy();
+            this.targetingCircle = null;
+        }
+    }
+
+    // Finish rotation and set ship movement
+    private finishRotation(pointer: Phaser.Input.Pointer) {
+        if (!this.rotationShip) return;
+
+        // Clear rotation indicator and exit targeting/locking modes if active
+        this.rotationIndicator.clear();
+        this.exitTargetingMode();
+        this.unlockWaypoint();
+
+        const clickPos = new Phaser.Math.Vector2(pointer.worldX, pointer.worldY);
+        const append = (pointer.event as MouseEvent).shiftKey === true;
+
+        // Calculate distance from start to finish
+        const deltaX = clickPos.x - this.rotationStartPos.x;
+        const deltaY = clickPos.y - this.rotationStartPos.y;
+        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+        // Always move to the initial click position (where the green dot is)
+        this.selectedShips.forEach((ship) => {
+            // Clear circular path when giving new movement commands
+            this.circularPaths.delete(ship);
+
+            // Move to the initial click position (where the green dot is) or locked waypoint position
+            const movementTarget = this.isWaypointLocked ? this.lockedWaypointPosition.clone() : new Phaser.Math.Vector2(this.rotationStartPos.x, this.rotationStartPos.y);
+            const waypointDirection = distance > 10 ? Math.atan2(deltaY, deltaX) : ship.targetRotation;
+
+            if (append && ship.waypoints.length > 0) {
+                ship.waypoints.push(movementTarget);
+                ship.waypointDirections.push(waypointDirection);
+                // Don't change target - keep moving to current target
+            } else {
+                ship.waypoints = [movementTarget];
+                ship.waypointDirections = [waypointDirection];
+                ship.pathStart = this.getObjectCenter(ship.gameObject);
+                // Set target to the first (and only) waypoint
+                ship.target = ship.waypoints[0] ?? null;
+            }
+
+            // Set initial rotation to the first waypoint's direction (only for new waypoint sets)
+            if (!append && ship.waypointDirections.length > 0 && ship.waypointDirections[0] !== undefined) {
+                ship.targetRotation = ship.waypointDirections[0];
+            }
+
+            this.updateWaypointDots(ship);
+        });
+
+        // Only change rotation if mouse moved far enough AND it's a new waypoint set (not appending)
+        if (distance > 10) {
+            // If mouse moved far enough, set rotation
+            const angle = Math.atan2(deltaY, deltaX);
+
+            // Set rotation for all selected ships (only for new waypoint sets, not when appending)
+            this.selectedShips.forEach((ship) => {
+                const append = (pointer.event as MouseEvent).shiftKey === true;
+                if (!append) {
+                    // Set the ship's rotation to face the arrow direction (only for new waypoint sets)
+                    ship.targetRotation = angle;
+                }
+                // When appending, don't change the ship's current rotation - it will rotate when it reaches each waypoint
+            });
+        }
+
+        // Reset rotation state
+        this.isRotating = false;
+        this.rotationShip = null;
+    }
+
+    // Helper method for smooth rotation interpolation
+    private approachRotation(current: number, target: number, maxDelta: number): number {
+        let diff = target - current;
+
+        // Handle angle wrapping (shortest path)
+        while (diff > Math.PI) diff -= 2 * Math.PI;
+        while (diff < -Math.PI) diff += 2 * Math.PI;
+
+        if (Math.abs(diff) < maxDelta) {
+            return target;
+        }
+
+        return current + Math.sign(diff) * maxDelta;
+    }
+
+    // DEBUG: Draw a line showing the ship's forward direction
+    private drawShipDirection(ship: Ship) {
+
+        const shipPos = new Phaser.Math.Vector2(ship.gameObject.x, ship.gameObject.y);
+        const directionLength = 40;
+
+        // Check if mouse is hovering over this ship
+        const mousePos = this.input.activePointer;
+        const shipBounds = ship.gameObject.getBounds();
+        const isHovering = shipBounds.contains(mousePos.worldX, mousePos.worldY);
+
+        // Draw red line showing current rotation
+        this.shipDirectionGraphics.lineStyle(3, 0xff0000, 1);
+        this.shipDirectionGraphics.beginPath();
+        this.shipDirectionGraphics.moveTo(shipPos.x, shipPos.y);
+        this.shipDirectionGraphics.lineTo(
+            shipPos.x + Math.cos(ship.rotation) * directionLength,
+            shipPos.y + Math.sin(ship.rotation) * directionLength
+        );
+        this.shipDirectionGraphics.strokePath();
+
+        // Draw red arrowhead for current rotation
+        const redEndX = shipPos.x + Math.cos(ship.rotation) * directionLength;
+        const redEndY = shipPos.y + Math.sin(ship.rotation) * directionLength;
+        const redAngle = ship.rotation;
+        const redArrowLength = 12;
+        const redArrowAngle1 = redAngle - Math.PI / 6;
+        const redArrowAngle2 = redAngle + Math.PI / 6;
+
+        this.shipDirectionGraphics.beginPath();
+        this.shipDirectionGraphics.moveTo(redEndX, redEndY);
+        this.shipDirectionGraphics.lineTo(
+            redEndX - Math.cos(redArrowAngle1) * redArrowLength,
+            redEndY - Math.sin(redArrowAngle1) * redArrowLength
+        );
+        this.shipDirectionGraphics.moveTo(redEndX, redEndY);
+        this.shipDirectionGraphics.lineTo(
+            redEndX - Math.cos(redArrowAngle2) * redArrowLength,
+            redEndY - Math.sin(redArrowAngle2) * redArrowLength
+        );
+        this.shipDirectionGraphics.strokePath();
+
+        // Draw direction line - green normally, red when hovering
+        const directionColor = isHovering ? 0xff0000 : 0x00ff00; // Red if hovering, green otherwise
+        this.shipDirectionGraphics.lineStyle(3, directionColor, 1);
+        this.shipDirectionGraphics.beginPath();
+        this.shipDirectionGraphics.moveTo(shipPos.x, shipPos.y);
+
+        // Get the raw direction angle (what the user is pointing to)
+        const rawDirectionAngle = ship.targetRotation; // Use the target rotation directly
+
+        this.shipDirectionGraphics.lineTo(
+            shipPos.x + Math.cos(rawDirectionAngle) * directionLength,
+            shipPos.y + Math.sin(rawDirectionAngle) * directionLength
+        );
+        this.shipDirectionGraphics.strokePath();
+
+        // Draw arrowhead for the direction
+        const directionEndX = shipPos.x + Math.cos(rawDirectionAngle) * directionLength;
+        const directionEndY = shipPos.y + Math.sin(rawDirectionAngle) * directionLength;
+        const directionAngle = rawDirectionAngle;
+        const directionArrowLength = 12;
+        const directionArrowAngle1 = directionAngle - Math.PI / 6;
+        const directionArrowAngle2 = directionAngle + Math.PI / 6;
+
+        this.shipDirectionGraphics.beginPath();
+        this.shipDirectionGraphics.moveTo(directionEndX, directionEndY);
+        this.shipDirectionGraphics.lineTo(
+            directionEndX - Math.cos(directionArrowAngle1) * directionArrowLength,
+            directionEndY - Math.sin(directionArrowAngle1) * directionArrowLength
+        );
+        this.shipDirectionGraphics.moveTo(directionEndX, directionEndY);
+        this.shipDirectionGraphics.lineTo(
+            directionEndX - Math.cos(directionArrowAngle2) * directionArrowLength,
+            directionEndY - Math.sin(directionArrowAngle2) * directionArrowLength
+        );
+        this.shipDirectionGraphics.strokePath();
+    }
+
+    // Draw waypoint paths when shift is held
+    private drawWaypointPaths() {
+        // Check if shift key is held
+        const shiftHeld = this.input.keyboard?.checkDown(this.input.keyboard.addKey('SHIFT'), 0);
+        if (!shiftHeld) return;
+
+        // Draw waypoint paths for all player ships
+        this.ships.forEach((ship) => {
+            if (ship.type !== 'enemy' && ship.waypoints.length > 0) {
+                this.drawShipWaypointPath(ship);
+            }
+        });
+    }
+
+    // Draw waypoint path for a specific ship
+    private drawShipWaypointPath(ship: Ship) {
+        const shipPos = new Phaser.Math.Vector2(ship.gameObject.x, ship.gameObject.y);
+
+        // Set line style for waypoint paths
+        this.waypointPathGraphics.lineStyle(2, VARIABLES[ship.type].color, 0.8);
+
+        // Draw line from ship to first waypoint
+        if (ship.waypoints.length > 0) {
+            const firstWaypoint = ship.waypoints[0];
+            if (firstWaypoint) {
+                this.waypointPathGraphics.beginPath();
+                this.waypointPathGraphics.moveTo(shipPos.x, shipPos.y);
+                this.waypointPathGraphics.lineTo(firstWaypoint.x, firstWaypoint.y);
+                this.waypointPathGraphics.strokePath();
+            }
+        }
+
+        // Draw lines between consecutive waypoints
+        for (let i = 0; i < ship.waypoints.length - 1; i++) {
+            const currentWaypoint = ship.waypoints[i];
+            const nextWaypoint = ship.waypoints[i + 1];
+
+            if (currentWaypoint && nextWaypoint) {
+                this.waypointPathGraphics.beginPath();
+                this.waypointPathGraphics.moveTo(currentWaypoint.x, currentWaypoint.y);
+                this.waypointPathGraphics.lineTo(nextWaypoint.x, nextWaypoint.y);
+                this.waypointPathGraphics.strokePath();
+            }
+        }
+    }
+
+    /**
+     * CAMERA DRAG METHODS
+     * ===================
+     *
+     * Methods for handling right-click and drag camera movement.
+     */
+
+    // Start camera dragging
+    private startCameraDrag(pointer: Phaser.Input.Pointer) {
+        this.isDraggingCamera = true;
+        this.cameraDragStart.set(pointer.x, pointer.y); // Screen coordinates
+        this.cameraStartScroll.set(this.cameras.main.scrollX, this.cameras.main.scrollY);
+    }
+
+    // Update camera position during drag
+    private updateCameraDrag(pointer: Phaser.Input.Pointer) {
+        if (!this.isDraggingCamera) return;
+
+        const camera = this.cameras.main;
+        const deltaX = this.cameraDragStart.x - pointer.x; // Inverted for natural feel
+        const deltaY = this.cameraDragStart.y - pointer.y;
+
+        camera.setScroll(
+            this.cameraStartScroll.x + deltaX,
+            this.cameraStartScroll.y + deltaY
+        );
+    }
+
+    // Finish camera dragging
+    private finishCameraDrag() {
+        this.isDraggingCamera = false;
     }
 
     /**

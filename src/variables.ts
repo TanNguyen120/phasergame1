@@ -33,6 +33,7 @@ export const VARIABLES = {
         color: 0x39ff14, // Green color (hex format: 0xRRGGBB)
         shape: 'triangle', // Visual shape of the ship
         health: 100, // How much damage the ship can take
+        rotationSpeed: 0.2, // How fast the ship rotates (radians per second)
         weapon: {
             fireRate: 1, // How many bullets per second it can shoot
             damage: 1, // How much damage each bullet does
@@ -49,6 +50,7 @@ export const VARIABLES = {
         color: 0x39ff14, // Same green color as player ships
         shape: 'square', // Square shape to distinguish from corvette
         health: 150, // More health than corvette
+        rotationSpeed: 0.5, // Slower rotation than corvette
         weapon: {
             fireRate: 0.5, // Shoots slower than corvette
             damage: 1, // But does more damage per shot
@@ -61,10 +63,11 @@ export const VARIABLES = {
         name: 'Enemy',
         speed: 10, // Medium speed between corvette and cruiser
         acceleration: 50, // Medium acceleration
-        size: 10, // Slightly larger than player ships
+        size: 24, // Same size as player ships
         color: 0xff0000, // Red color to distinguish from player ships
         shape: 'triangle', // Triangle shape like corvette
-        health: 10, // More health than corvette, less than cruiser
+        health: 50, // More health than corvette, less than cruiser
+        rotationSpeed: .5, // Medium rotation speed
         weapon: {
             fireRate: 1, // Fires faster than cruiser, slower than corvette
             damage: 1, // Medium damage
@@ -100,6 +103,7 @@ export const VARIABLES = {
         minDistance: 20, // Minimum distance ships should maintain from each other (pixels)
         separationForce: 15, // How far ships move away from each other when too close (pixels)
     },
+
 };
 
 // This creates a TypeScript type that matches our VARIABLES object
